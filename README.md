@@ -1,6 +1,6 @@
 # QueueAlign API
 
-Fair-queue check-in for hackathons. FastAPI + SQLite.
+Fair-queue check-in for hackathons. FastAPI + SQLite (local) / Neon Postgres (production).
 
 ## Setup
 
@@ -22,6 +22,14 @@ uvicorn app.main:app --reload --port 8001
 API docs: http://127.0.0.1:8001/docs
 
 Health: `GET /api/health`
+
+## Database
+
+- **Local:** SQLite (`DATABASE_URL=sqlite:///./queuealign.db`)
+- **Vercel / production:** Neon Postgres — set `DATABASE_URL` in the Vercel project env  
+  (SQLAlchemy uses `psycopg`; `postgresql://…` is rewritten automatically)
+
+Also set `SECRET_KEY`, `CORS_ORIGINS`, and `FRONTEND_URL` on Vercel.
 
 ## Notable endpoints
 

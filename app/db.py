@@ -6,27 +6,41 @@ from pathlib import Path
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 
 
 def _resolve_database_url(url: str) -> str:
-    if not url.startswith("sqlite:///./"):
-        return url
-    root = Path(__file__).resolve().parent.parent
-    db_path = root / url.removeprefix("sqlite:///./")
-    return f"sqlite:///{db_path}"
+    # SQLAlchemy + psycopg3
+    if url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url.removeprefix("postgres://")
+    elif url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url.removeprefix("postgresql://")
+
+    if url.startswith("sqlite:///./"):
+        root = Path(__file__).resolve().parent.parent
+        db_path = root / url.removeprefix("sqlite:///./")
+        return f"sqlite:///{db_path}"
+    return url
 
 
 DATABASE_URL = _resolve_database_url(settings.database_url)
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+IS_SQLITE = DATABASE_URL.startswith("sqlite")
+
+connect_args: dict = {"check_same_thread": False} if IS_SQLITE else {}
+# Serverless (Vercel) + Neon: no persistent connections between invocations
+engine_kwargs: dict = {"connect_args": connect_args, "pool_pre_ping": True}
+if not IS_SQLITE:
+    engine_kwargs["poolclass"] = NullPool
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 @event.listens_for(Engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, connection_record) -> None:  # noqa: ARG001
-    if not DATABASE_URL.startswith("sqlite"):
+    if not IS_SQLITE:
         return
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")

@@ -20,9 +20,11 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="QueueAlign", version="1.0.0", lifespan=lifespan)
 
+_explicit_origins = [o for o in settings.cors_origin_list if "*" not in o]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
+    allow_origins=_explicit_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
