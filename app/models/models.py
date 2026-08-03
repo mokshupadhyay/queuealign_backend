@@ -54,7 +54,9 @@ class Participant(Base):
         String(64), unique=True, index=True, default=lambda: uuid.uuid4().hex
     )
     status: Mapped[ParticipantStatus] = mapped_column(
-        Enum(ParticipantStatus), default=ParticipantStatus.waiting, nullable=False
+        Enum(ParticipantStatus, native_enum=False, values_callable=lambda x: [e.value for e in x]),
+        default=ParticipantStatus.waiting,
+        nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     called_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

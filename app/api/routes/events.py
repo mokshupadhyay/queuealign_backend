@@ -1,23 +1,30 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import get_db
+from app.models.models import Event, Participant
 from app.models.schemas import (
     AuthRequest,
     AuthResponse,
     CheckinRequest,
+    DeskParticipant,
     DisplayOut,
     DisplayParticipant,
     EventCreate,
     EventCreated,
     EventPublic,
+    EventUpdate,
     MessageOut,
     ParticipantOut,
+    ParticipantPublic,
     ParticipantStatusOut,
     QueueOut,
     RegisterRequest,
     RegisterResponse,
+    RequeueRequest,
+    SkipRequest,
 )
 from app.services import auth as auth_service
 from app.services import queue as queue_service
@@ -32,8 +39,18 @@ def require_desk(slug: str, authorization: str | None = Header(default=None)) ->
     token = authorization.removeprefix("Bearer ").strip()
     token_slug = auth_service.decode_desk_token(token)
     if not token_slug or token_slug != slug:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired desk token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired desk token"
+        )
     return token_slug
+
+
+def _client_key(request: Request, slug: str) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    ip = (forwarded.split(",")[0].strip() if forwarded else None) or (
+        request.client.host if request.client else "unknown"
+    )
+    return f"{slug}:{ip}"
 
 
 @router.post("/events", response_model=EventCreated)
@@ -64,11 +81,45 @@ def get_event(slug: str, db: Session = Depends(get_db)) -> EventPublic:
     )
 
 
+@router.patch("/events/{slug}", response_model=EventPublic)
+def update_event(
+    slug: str,
+    body: EventUpdate,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_desk),
+) -> EventPublic:
+    event = queue_service.get_event_by_slug(db, slug)
+    event = queue_service.set_event_active(db, event, body.is_active)
+    counts = queue_service.count_by_status(db, event.id)
+    return EventPublic(
+        slug=event.slug,
+        name=event.name,
+        is_active=event.is_active,
+        waiting_count=counts["waiting"],
+        called_count=counts["called"],
+        checked_in_count=counts["checked_in"],
+        total_count=counts["total"],
+    )
+
+
 @router.post("/events/{slug}/auth", response_model=AuthResponse)
-def auth_desk(slug: str, body: AuthRequest, db: Session = Depends(get_db)) -> AuthResponse:
+def auth_desk(
+    slug: str,
+    body: AuthRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AuthResponse:
+    key = _client_key(request, slug)
+    if auth_service.pin_rate_limited(key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many PIN attempts. Wait a few minutes and try again.",
+        )
     event = queue_service.get_event_by_slug(db, slug)
     if not auth_service.verify_pin(body.pin, event.pin_hash):
+        auth_service.record_pin_failure(key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect PIN")
+    auth_service.clear_pin_failures(key)
     token = auth_service.create_desk_token(event.slug)
     return AuthResponse(token=token, expires_in_hours=settings.desk_token_hours)
 
@@ -77,24 +128,32 @@ def auth_desk(slug: str, body: AuthRequest, db: Session = Depends(get_db)) -> Au
 def register(slug: str, body: RegisterRequest, db: Session = Depends(get_db)) -> RegisterResponse:
     event = queue_service.get_event_by_slug(db, slug)
     if not event.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Event is not accepting registrations")
-    participant = queue_service.register_participant(db, event, body.name, str(body.email), body.team_name)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Event is not accepting registrations",
+        )
+    participant, already = queue_service.register_participant(
+        db, event, body.name, str(body.email), body.team_name
+    )
     return RegisterResponse(
         participant=ParticipantOut.model_validate(participant),
         status_path=qr_service.status_path(event.slug, participant.checkin_token),
         qr_url=qr_service.qr_api_path(participant.checkin_token),
+        already_registered=already,
     )
 
 
 @router.get("/events/{slug}/participants/{token}", response_model=ParticipantStatusOut)
-def participant_status(slug: str, token: str, db: Session = Depends(get_db)) -> ParticipantStatusOut:
+def participant_status(
+    slug: str, token: str, db: Session = Depends(get_db)
+) -> ParticipantStatusOut:
     event = queue_service.get_event_by_slug(db, slug)
     participant = queue_service.get_participant_by_token(db, event, token)
     called = queue_service.get_called(db, event.id)
     return ParticipantStatusOut(
         event_name=event.name,
         event_slug=event.slug,
-        participant=ParticipantOut.model_validate(participant),
+        participant=ParticipantPublic.model_validate(participant),
         people_ahead=queue_service.people_ahead(db, participant),
         now_serving=called.queue_number if called else None,
         now_serving_name=called.name if called else None,
@@ -110,7 +169,7 @@ def display_feed(slug: str, db: Session = Depends(get_db)) -> DisplayOut:
     waiting = queue_service.up_next(db, event.id, limit=5)
     counts = queue_service.count_by_status(db, event.id)
 
-    def to_display(p) -> DisplayParticipant:
+    def to_display(p: Participant) -> DisplayParticipant:
         return DisplayParticipant(
             queue_number=p.queue_number,
             name=p.name,
@@ -142,8 +201,9 @@ def desk_queue(
     return QueueOut(
         event_name=event.name,
         event_slug=event.slug,
-        now_serving=ParticipantOut.model_validate(called) if called else None,
-        participants=[ParticipantOut.model_validate(p) for p in participants],
+        is_active=event.is_active,
+        now_serving=DeskParticipant.model_validate(called) if called else None,
+        participants=[DeskParticipant.model_validate(p) for p in participants],
         waiting_count=counts["waiting"],
         called_count=counts["called"],
         checked_in_count=counts["checked_in"],
@@ -186,11 +246,13 @@ def checkin(
 @router.post("/events/{slug}/skip", response_model=MessageOut)
 def skip(
     slug: str,
+    body: SkipRequest | None = None,
     db: Session = Depends(get_db),
     _: str = Depends(require_desk),
 ) -> MessageOut:
     event = queue_service.get_event_by_slug(db, slug)
-    participant = queue_service.skip_current(db, event)
+    call_next_after = body.call_next if body else False
+    participant = queue_service.skip_current(db, event, call_next_after=call_next_after)
     return MessageOut(
         ok=True,
         message=f"Skipped #{participant.queue_number} — {participant.name}",
@@ -198,12 +260,24 @@ def skip(
     )
 
 
+@router.post("/events/{slug}/requeue", response_model=MessageOut)
+def requeue(
+    slug: str,
+    body: RequeueRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_desk),
+) -> MessageOut:
+    event = queue_service.get_event_by_slug(db, slug)
+    participant = queue_service.requeue(db, event, body.queue_number)
+    return MessageOut(
+        ok=True,
+        message=f"Returned #{participant.queue_number} — {participant.name} to waiting",
+        participant=ParticipantOut.model_validate(participant),
+    )
+
+
 @router.get("/qr/{token}.png")
 def qr_image(token: str, db: Session = Depends(get_db)) -> Response:
-    from sqlalchemy import select
-
-    from app.models.models import Event, Participant
-
     participant = db.scalar(select(Participant).where(Participant.checkin_token == token))
     if not participant:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown token")

@@ -7,7 +7,7 @@ from app.models.models import ParticipantStatus
 
 class EventCreate(BaseModel):
     name: str = Field(min_length=2, max_length=200)
-    pin: str = Field(min_length=4, max_length=32)
+    pin: str = Field(min_length=4, max_length=32, pattern=r"^\d+$")
 
 
 class EventPublic(BaseModel):
@@ -29,6 +29,10 @@ class EventCreated(BaseModel):
     display_path: str
 
 
+class EventUpdate(BaseModel):
+    is_active: bool
+
+
 class AuthRequest(BaseModel):
     pin: str = Field(min_length=4, max_length=32)
 
@@ -42,6 +46,19 @@ class RegisterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     email: EmailStr
     team_name: str | None = Field(default=None, max_length=120)
+
+
+class ParticipantPublic(BaseModel):
+    id: int
+    name: str
+    team_name: str | None
+    queue_number: int
+    status: ParticipantStatus
+    created_at: datetime
+    called_at: datetime | None
+    checked_in_at: datetime | None
+
+    model_config = {"from_attributes": True}
 
 
 class ParticipantOut(BaseModel):
@@ -59,16 +76,31 @@ class ParticipantOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DeskParticipant(BaseModel):
+    id: int
+    name: str
+    email: str
+    team_name: str | None
+    queue_number: int
+    status: ParticipantStatus
+    created_at: datetime
+    called_at: datetime | None
+    checked_in_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
 class RegisterResponse(BaseModel):
     participant: ParticipantOut
     status_path: str
     qr_url: str
+    already_registered: bool = False
 
 
 class ParticipantStatusOut(BaseModel):
     event_name: str
     event_slug: str
-    participant: ParticipantOut
+    participant: ParticipantPublic
     people_ahead: int
     now_serving: int | None
     now_serving_name: str | None
@@ -96,8 +128,9 @@ class DisplayOut(BaseModel):
 class QueueOut(BaseModel):
     event_name: str
     event_slug: str
-    now_serving: ParticipantOut | None
-    participants: list[ParticipantOut]
+    is_active: bool
+    now_serving: DeskParticipant | None
+    participants: list[DeskParticipant]
     waiting_count: int
     called_count: int
     checked_in_count: int
@@ -110,7 +143,15 @@ class CheckinRequest(BaseModel):
     queue_number: int | None = None
 
 
+class RequeueRequest(BaseModel):
+    queue_number: int = Field(ge=1)
+
+
+class SkipRequest(BaseModel):
+    call_next: bool = False
+
+
 class MessageOut(BaseModel):
     ok: bool
     message: str
-    participant: ParticipantOut | None = None
+    participant: ParticipantOut | DeskParticipant | None = None
