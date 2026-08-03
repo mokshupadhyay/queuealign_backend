@@ -34,6 +34,17 @@ def set_event_active(db: Session, event: Event, is_active: bool) -> Event:
     return event
 
 
+def list_active_events(db: Session, limit: int = 50) -> list[Event]:
+    return list(
+        db.scalars(
+            select(Event)
+            .where(Event.is_active.is_(True))
+            .order_by(Event.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
 def count_by_status(db: Session, event_id: int) -> dict[str, int]:
     rows = db.execute(
         select(Participant.status, func.count())

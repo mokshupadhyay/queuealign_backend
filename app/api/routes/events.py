@@ -14,6 +14,7 @@ from app.models.schemas import (
     DisplayParticipant,
     EventCreate,
     EventCreated,
+    EventListItem,
     EventPublic,
     EventUpdate,
     MessageOut,
@@ -60,10 +61,31 @@ def create_event(body: EventCreate, db: Session = Depends(get_db)) -> EventCreat
         slug=event.slug,
         name=event.name,
         pin=body.pin,
-        register_path=f"/e/{event.slug}",
+        register_path=qr_service.register_path(event.slug),
+        register_url=qr_service.register_url(event.slug),
         desk_path=f"/e/{event.slug}/desk",
         display_path=f"/e/{event.slug}/display",
+        event_qr_url=qr_service.event_qr_api_path(event.slug),
     )
+
+
+@router.get("/events", response_model=list[EventListItem])
+def list_events(db: Session = Depends(get_db)) -> list[EventListItem]:
+    events = queue_service.list_active_events(db)
+    items: list[EventListItem] = []
+    for event in events:
+        counts = queue_service.count_by_status(db, event.id)
+        items.append(
+            EventListItem(
+                slug=event.slug,
+                name=event.name,
+                waiting_count=counts["waiting"],
+                checked_in_count=counts["checked_in"],
+                total_count=counts["total"],
+                created_at=event.created_at,
+            )
+        )
+    return items
 
 
 @router.get("/events/{slug}", response_model=EventPublic)
@@ -78,7 +100,16 @@ def get_event(slug: str, db: Session = Depends(get_db)) -> EventPublic:
         called_count=counts["called"],
         checked_in_count=counts["checked_in"],
         total_count=counts["total"],
+        created_at=event.created_at,
+        event_qr_url=qr_service.event_qr_api_path(event.slug),
     )
+
+
+@router.get("/events/{slug}/qr.png")
+def event_qr_image(slug: str, db: Session = Depends(get_db)) -> Response:
+    event = queue_service.get_event_by_slug(db, slug)
+    png = qr_service.make_qr_png(qr_service.register_url(event.slug))
+    return Response(content=png, media_type="image/png")
 
 
 @router.patch("/events/{slug}", response_model=EventPublic)
@@ -99,6 +130,8 @@ def update_event(
         called_count=counts["called"],
         checked_in_count=counts["checked_in"],
         total_count=counts["total"],
+        created_at=event.created_at,
+        event_qr_url=qr_service.event_qr_api_path(event.slug),
     )
 
 

@@ -13,8 +13,20 @@ def status_url(slug: str, token: str) -> str:
     return f"{settings.frontend_url.rstrip('/')}{status_path(slug, token)}"
 
 
+def register_path(slug: str) -> str:
+    return f"/e/{slug}"
+
+
+def register_url(slug: str) -> str:
+    return f"{settings.frontend_url.rstrip('/')}{register_path(slug)}"
+
+
 def qr_api_path(token: str) -> str:
     return f"/api/qr/{token}.png"
+
+
+def event_qr_api_path(slug: str) -> str:
+    return f"/api/events/{slug}/qr.png"
 
 
 def make_qr_png(data: str) -> bytes:

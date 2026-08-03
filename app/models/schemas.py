@@ -18,6 +18,17 @@ class EventPublic(BaseModel):
     called_count: int
     checked_in_count: int
     total_count: int
+    created_at: datetime | None = None
+    event_qr_url: str | None = None
+
+
+class EventListItem(BaseModel):
+    slug: str
+    name: str
+    waiting_count: int
+    checked_in_count: int
+    total_count: int
+    created_at: datetime
 
 
 class EventCreated(BaseModel):
@@ -25,8 +36,10 @@ class EventCreated(BaseModel):
     name: str
     pin: str
     register_path: str
+    register_url: str
     desk_path: str
     display_path: str
+    event_qr_url: str
 
 
 class EventUpdate(BaseModel):
